@@ -46,7 +46,7 @@ Header: `<typesafe/curl_transport.h>`
 
 * **Backend**: `libcurl`
 * **CMake Flag**: `TYPESAFE_USE_LIBCURL=ON` (enabled by default)
-* **Features**: System SSL trust store verification; HTTP/1.1, or HTTP/2 when the libcurl build and the server negotiate it via ALPN. Each request uses a fresh connection (no pooling).
+* **Features**: System SSL trust store verification; HTTP/1.1, or HTTP/2 when the libcurl build and the server negotiate it via ALPN. Each thread keeps one libcurl handle and reuses it, so requests after the first to the same host reuse the open connection and skip the TCP and TLS handshakes. Handles are never shared between threads.
 
 When `TYPESAFE_USE_LIBCURL` is enabled in CMake, `TypeSafeClientBuilder` automatically instantiates `CurlTransport` if no custom transport is injected.
 

@@ -31,10 +31,8 @@ struct HttpResponse
 };
 
 /**
- * @brief Abstract transport layer for HTTP requests.
- *
- * Allows the SDK to remain independent of any specific HTTP library (e.g.,
- * libcurl) by having the host application inject a transport implementation.
+ * @brief The HTTP layer, so an application can supply its own client in place
+ * of libcurl.
  */
 class Transport
 {

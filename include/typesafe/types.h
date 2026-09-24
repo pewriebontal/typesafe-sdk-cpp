@@ -17,7 +17,7 @@ namespace typesafe
 {
 
 /**
- * @brief Represents a categorical multiple-choice question.
+ * @brief A multiple-choice question.
  *
  * The model will select exactly one option from the provided criteria.
  */
@@ -28,7 +28,7 @@ struct Choice
 };
 
 /**
- * @brief Represents a scoring or grading question.
+ * @brief A question scored against ordered levels.
  *
  * The model places the state at a position along the ordered levels in
  * criteria; the answer may land between two levels.
@@ -40,8 +40,7 @@ struct Score
 };
 
 /**
- * @brief Semantic criteria specifying the meaning of true and false for a Noul
- * question.
+ * @brief What true and false mean for a Noul question.
  */
 struct NoulCriteria
 {
@@ -98,10 +97,7 @@ struct Usage
 };
 
 /**
- * @brief The primary request payload for the System One API.
- *
- * Encapsulates the context (state) and the specific structural questions
- * (choices, scores, nouls) the model needs to answer.
+ * @brief A System One request: the state and the questions about it.
  */
 struct SystemOneRequest
 {
@@ -153,7 +149,7 @@ struct SystemOneResponse
 };
 
 /**
- * @brief Model descriptive metadata returned by GET /v1/models.
+ * @brief One model returned by GET /v1/models.
  */
 struct ModelMetadata
 {
@@ -163,44 +159,23 @@ struct ModelMetadata
 };
 
 /**
- * @brief Response container for GET /v1/models listing available models.
+ * @brief The response from GET /v1/models.
  */
 struct ListModelsResponse
 {
 		std::vector<ModelMetadata> models;
 };
 
-/** @brief Serializes Choice question to JSON. */
 void to_json(nlohmann::json &j, const Choice &q);
-
-/** @brief Serializes Score question to JSON. */
 void to_json(nlohmann::json &j, const Score &q);
-
-/** @brief Serializes Noul question to JSON. */
 void to_json(nlohmann::json &j, const Noul &q);
-
-/** @brief Serializes NoulCriteria to JSON. */
 void to_json(nlohmann::json &j, const NoulCriteria &criteria);
-
-/** @brief Deserializes ChoiceAnswer from JSON. */
 void from_json(const nlohmann::json &j, ChoiceAnswer &r);
-
-/** @brief Deserializes ScoreAnswer from JSON. */
 void from_json(const nlohmann::json &j, ScoreAnswer &r);
-
-/** @brief Deserializes NoulAnswer from JSON. */
 void from_json(const nlohmann::json &j, NoulAnswer &r);
-
-/** @brief Deserializes Usage statistics from JSON. */
 void from_json(const nlohmann::json &j, Usage &r);
-
-/** @brief Deserializes SystemOneResponse from JSON. */
 void from_json(const nlohmann::json &j, SystemOneResponse &r);
-
-/** @brief Deserializes ModelMetadata from JSON. */
 void from_json(const nlohmann::json &j, ModelMetadata &r);
-
-/** @brief Deserializes ListModelsResponse from JSON. */
 void from_json(const nlohmann::json &j, ListModelsResponse &r);
 
 }  // namespace typesafe

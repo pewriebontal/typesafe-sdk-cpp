@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -18,13 +19,12 @@ namespace typesafe::testing
 {
 
 /**
- * @brief A transport that records every request and plays back a queue of
- * canned responses, so the tests assert on exactly what would have gone on
- * the wire without anything leaving the process.
+ * @brief A transport that records every request and replays a queue of
+ * canned responses.
  *
- * An empty queue makes the request throw, which stands in for a connection
- * failure; `delay` holds each request briefly so asynchronous tests can
- * prove a future outlives the client that made it.
+ * An empty queue makes the request throw, as a connection failure would.
+ * `delay` sleeps 20 ms per request. Not synchronized: one instance per test,
+ * no concurrent requests.
  */
 struct RecordingTransport final : Transport
 {
@@ -60,7 +60,7 @@ inline HttpResponse ValidResponse(nlohmann::json answers)
 	    {}};
 }
 
-/** @brief A well-formed 200 from GET /v1/models, per the documented example. */
+/** @brief A well-formed 200 from GET /v1/models. */
 inline HttpResponse ModelsResponse()
 {
 	nlohmann::json alias

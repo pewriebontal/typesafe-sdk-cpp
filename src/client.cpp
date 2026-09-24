@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <nlohmann/json.hpp>
+#include <random>
 #include <thread>
 
 #ifdef TYPESAFE_USE_LIBCURL
@@ -23,6 +24,14 @@ namespace typesafe
 
 constexpr const char *kSystemOnePath = "/v1/systemone";
 constexpr const char *kModelsPath = "/v1/models";
+constexpr const char *kOpenRouterBaseUrl = "https://openrouter.ai/api";
+constexpr const char *kOpenRouterModel = "typesafe/jev-1.13";
+constexpr int         kBackoffInitialMs = 500;
+constexpr int         kBackoffMaxMs = 5000;
+constexpr double      kBackoffJitter = 0.25;
+constexpr std::size_t kMaxChoiceOptions = 255;
+constexpr std::size_t kMaxScoreLevels = 10;
+constexpr int         kMaxUnbudgetedWaitMs = 60000;
 constexpr const char *kSdkName = "typesafe-sdk-cpp";
 constexpr const char *kSdkVersion = TYPESAFE_SDK_VERSION;
 constexpr const char *kRuntime = "C++20";
@@ -33,14 +42,141 @@ bool isJsonContent(const nlohmann::json &value, bool allow_null)
 	       || (allow_null && value.is_null());
 }
 
+std::string trimmed(const std::string &text)
+{
+	const std::size_t first = text.find_first_not_of(" \t\r\n\f\v");
+	if (first == std::string::npos)
+		return ("");
+	const std::size_t last = text.find_last_not_of(" \t\r\n\f\v");
+	return (text.substr(first, last - first + 1));
+}
+
+std::optional<std::string> readEnv(const char *name)
+{
+	const char *raw = std::getenv(name);
+	if (raw == nullptr)
+		return (std::nullopt);
+	std::string value = trimmed(raw);
+	if (value.empty())
+		return (std::nullopt);
+	return (value);
+}
+
+/**
+ * @brief The readable part of an error body: TypeSafe's 422 `detail` list
+ * ("loc: msg; ..."), or OpenRouter's `error.message`; else the raw body.
+ */
+std::string errorDetail(const std::string &body)
+{
+	try
+	{
+		const auto parsed = nlohmann::json::parse(body);
+		if (parsed.contains("detail") && parsed.at("detail").is_array())
+		{
+			std::string joined;
+			for (const auto &issue : parsed.at("detail"))
+			{
+				std::string location;
+				if (issue.contains("loc") && issue.at("loc").is_array())
+					for (const auto &part : issue.at("loc"))
+					{
+						if (!location.empty())
+							location += '.';
+						location += part.is_string() ? part.get<std::string>()
+						                             : part.dump();
+					}
+				if (!joined.empty())
+					joined += "; ";
+				if (!location.empty())
+					joined += location + ": ";
+				joined += issue.value("msg", issue.dump());
+			}
+			if (!joined.empty())
+				return (joined);
+		}
+		if (parsed.contains("detail") && parsed.at("detail").is_string())
+			return (parsed.at("detail").get<std::string>());
+		if (parsed.contains("error") && parsed.at("error").is_object()
+		    && parsed.at("error").contains("message")
+		    && parsed.at("error").at("message").is_string())
+			return (parsed.at("error").at("message").get<std::string>());
+	}
+	catch (const nlohmann::json::exception &)
+	{
+	}
+	return (body);
+}
+
+[[noreturn]] void throwForStatus(const HttpResponse &res)
+{
+	const std::string detail = errorDetail(res.body);
+
+	if (res.status_code == 401 || res.status_code == 403)
+		throw AuthenticationError("Authentication failed: " + detail);
+	if (res.status_code == 429)
+		throw RateLimitError("Rate limit exceeded: " + detail);
+	if (res.status_code == 422)
+		throw ValidationError("Request failed validation (HTTP 422): "
+		                      + detail);
+	throw APIError("API returned HTTP " + std::to_string(res.status_code) + ": "
+	               + detail);
+}
+
+int backoffDelayMs(int retry)
+{
+	thread_local std::mt19937              random(std::random_device{}());
+	std::uniform_real_distribution<double> jitter(0.0, kBackoffJitter);
+	const int       exponent = std::clamp(retry - 1, 0, 30);
+	const long long exponential = std::min<long long>(
+	    static_cast<long long>(kBackoffInitialMs) << exponent, kBackoffMaxMs);
+
+	return (static_cast<int>(static_cast<double>(exponential)
+	                         * (1.0 - jitter(random))));
+}
+
+std::optional<int> retryAfterMs(const HttpResponse &res)
+{
+	auto header_value
+	    = [&res](const std::string &wanted) -> std::optional<std::string>
+	{
+		for (const auto &[name, value] : res.headers)
+		{
+			if (name.size() != wanted.size())
+				continue;
+			bool equal = true;
+			for (std::size_t i = 0; i < name.size(); ++i)
+				equal = equal
+				        && std::tolower(static_cast<unsigned char>(name[i]))
+				               == wanted[i];
+			if (equal)
+				return value;
+		}
+		return std::nullopt;
+	};
+	try
+	{
+		double value = -1.0;
+		if (auto milliseconds = header_value("retry-after-ms"))
+			value = std::stod(*milliseconds);
+		else if (auto seconds = header_value("retry-after"))
+			value = std::stod(*seconds) * 1000.0;
+		if (std::isfinite(value) && value >= 0.0)
+			return (static_cast<int>(std::min(value, 1e9)));
+	}
+	catch (const std::exception &)
+	{
+	}
+	return (std::nullopt);
+}
+
 TypeSafeClientBuilder::TypeSafeClientBuilder()
 {
-	if (const char *env_key = std::getenv("TYPESAFE_API_KEY"))
-		_config.api_key = env_key;
-	if (const char *env_url = std::getenv("TYPESAFE_BASE_URL"))
-		_config.base_url = env_url;
-	if (const char *env_model = std::getenv("TYPESAFE_DEFAULT_MODEL"))
-		_config.default_model = env_model;
+	if (auto env_key = readEnv("TYPESAFE_API_KEY"))
+		_config.api_key = *env_key;
+	if (auto env_url = readEnv("TYPESAFE_BASE_URL"))
+		_config.base_url = *env_url;
+	if (auto env_model = readEnv("TYPESAFE_DEFAULT_MODEL"))
+		_config.default_model = *env_model;
 }
 
 TypeSafeClientBuilder &TypeSafeClientBuilder::api_key(const std::string &key)
@@ -52,6 +188,7 @@ TypeSafeClientBuilder &TypeSafeClientBuilder::api_key(const std::string &key)
 TypeSafeClientBuilder &TypeSafeClientBuilder::base_url(const std::string &url)
 {
 	_config.base_url = url;
+	_config.openrouter = false;
 	return (*this);
 }
 
@@ -73,6 +210,21 @@ TypeSafeClientBuilder &TypeSafeClientBuilder::max_retries(int retries)
 	return (*this);
 }
 
+TypeSafeClientBuilder &TypeSafeClientBuilder::retry_timeout(int ms)
+{
+	_config.retry_timeout_ms = ms;
+	return (*this);
+}
+
+TypeSafeClientBuilder &TypeSafeClientBuilder::openrouter(const std::string &key)
+{
+	_config.api_key = key;
+	_config.default_model = kOpenRouterModel;
+	_config.base_url = kOpenRouterBaseUrl;
+	_config.openrouter = true;
+	return (*this);
+}
+
 TypeSafeClientBuilder &TypeSafeClientBuilder::transport(
     std::unique_ptr<Transport> transport)
 {
@@ -82,10 +234,22 @@ TypeSafeClientBuilder &TypeSafeClientBuilder::transport(
 
 TypeSafeClient TypeSafeClientBuilder::build()
 {
+	if (_config.api_key)
+		_config.api_key = trimmed(*_config.api_key);
 	if (!_config.api_key || _config.api_key->empty())
 		throw AuthenticationError("TYPESAFE_API_KEY is not set.");
-	if (_config.base_url.empty())
-		throw ValidationError("Base URL must not be empty.");
+	for (const char c : *_config.api_key)
+		if (c < '!' || c > '~')
+			throw AuthenticationError(
+			    "API key must not contain whitespace, control, or non-ASCII "
+			    "characters.");
+	_config.base_url = trimmed(_config.base_url);
+	if (!(_config.base_url.rfind("https://", 0) == 0
+	      && _config.base_url.size() > 8)
+	    && !(_config.base_url.rfind("http://", 0) == 0
+	         && _config.base_url.size() > 7))
+		throw ValidationError(
+		    "Base URL must be an absolute http or https URL.");
 	while (_config.base_url.size() > 1 && _config.base_url.back() == '/')
 		_config.base_url.pop_back();
 	if (_config.default_model.empty())
@@ -94,6 +258,8 @@ TypeSafeClient TypeSafeClientBuilder::build()
 		throw ValidationError("Timeout must be greater than zero.");
 	if (_config.max_retries < 0)
 		throw ValidationError("Maximum retries must not be negative.");
+	if (_config.retry_timeout_ms < 0)
+		throw ValidationError("Retry timeout must not be negative.");
 
 	if (!_transport)
 	{
@@ -129,7 +295,7 @@ TypeSafeClient::~TypeSafeClient() = default;
 
 HttpResponse TypeSafeClient::sendRequest(
     const std::string                        &method,
-    const std::string                        &path,
+    const std::string                        &url,
     const std::optional<std::string>         &body,
     int                                       timeout_ms,
     const std::map<std::string, std::string> &extra_headers) const
@@ -139,7 +305,7 @@ HttpResponse TypeSafeClient::sendRequest(
 
 	HttpRequest req;
 	req.method = method;
-	req.url = _config.base_url + path;
+	req.url = url;
 	req.timeout_ms = timeout_ms;
 
 	req.headers = extra_headers;
@@ -155,88 +321,57 @@ HttpResponse TypeSafeClient::sendRequest(
 		req.body = *body;
 	}
 
-	int attempt = 0;
-	int backoff_ms = 1000;
+	const auto started = std::chrono::steady_clock::now();
+	auto       elapsed_ms = [&started]()
+	{
+		return (std::chrono::duration_cast<std::chrono::milliseconds>(
+		            std::chrono::steady_clock::now() - started)
+		            .count());
+	};
+	const long long budget_ms = _config.retry_timeout_ms;
+	int             retry = 0;
 
 	while (true)
 	{
 		std::optional<HttpResponse> response;
+		std::string                 connection_error;
 		try
 		{
 			response = _transport->request(req);
 		}
 		catch (const std::exception &e)
 		{
-			if (attempt >= _config.max_retries)
-				throw APIConnectionError(std::string("Connection failed: ")
-				                         + e.what());
+			connection_error = e.what();
 		}
 
-		int delay_ms = backoff_ms;
 		if (response)
 		{
-			const HttpResponse &res = *response;
-			if (res.status_code >= 200 && res.status_code < 300)
-				return res;
-			if (res.status_code == 401 || res.status_code == 403)
-				throw AuthenticationError("Authentication failed: " + res.body);
-
-			const bool retryable
-			    = res.status_code == 408 || res.status_code == 429
-			      || (res.status_code >= 500 && res.status_code <= 599);
-			if (!retryable || attempt >= _config.max_retries)
-			{
-				if (res.status_code == 429)
-					throw RateLimitError("Rate limit exceeded: " + res.body);
-				if (res.status_code == 422)
-					throw ValidationError(
-					    "Request failed validation (HTTP 422): " + res.body);
-				throw APIError("API returned HTTP "
-				               + std::to_string(res.status_code) + ": "
-				               + res.body);
-			}
-
-			auto header_value =
-			    [&res](const std::string &wanted) -> std::optional<std::string>
-			{
-				for (const auto &[name, value] : res.headers)
-				{
-					if (name.size() != wanted.size())
-						continue;
-					bool equal = true;
-					for (std::size_t i = 0; i < name.size(); ++i)
-						equal = equal
-						        && std::tolower(
-						               static_cast<unsigned char>(name[i]))
-						               == wanted[i];
-					if (equal)
-						return value;
-				}
-				return std::nullopt;
-			};
-			try
-			{
-				if (auto milliseconds = header_value("retry-after-ms"))
-				{
-					const double value = std::stod(*milliseconds);
-					if (std::isfinite(value) && value >= 0.0)
-						delay_ms = static_cast<int>(std::min(value, 60000.0));
-				}
-				else if (auto seconds = header_value("retry-after"))
-				{
-					const double value = std::stod(*seconds) * 1000.0;
-					if (std::isfinite(value) && value >= 0.0)
-						delay_ms = static_cast<int>(std::min(value, 60000.0));
-				}
-			}
-			catch (const std::exception &)
-			{
-			}
+			const int status = response->status_code;
+			if (status >= 200 && status < 300)
+				return (*response);
+			const bool retryable = status == 408 || status == 429
+			                       || (status >= 500 && status <= 599);
+			if (!retryable || retry >= _config.max_retries)
+				throwForStatus(*response);
 		}
+		else if (retry >= _config.max_retries)
+			throw APIConnectionError("Connection failed: " + connection_error);
 
-		attempt++;
+		const std::optional<int> requested
+		    = response ? retryAfterMs(*response) : std::nullopt;
+		const int delay_ms = requested ? *requested : backoffDelayMs(retry + 1);
+
+		const bool over_budget = budget_ms > 0
+		                             ? elapsed_ms() + delay_ms >= budget_ms
+		                             : delay_ms > kMaxUnbudgetedWaitMs;
+		if (over_budget)
+		{
+			if (response)
+				throwForStatus(*response);
+			throw APIConnectionError("Connection failed: " + connection_error);
+		}
+		retry++;
 		std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-		backoff_ms = std::min(backoff_ms * 2, 60000);
 	}
 }
 
@@ -281,6 +416,12 @@ HttpResponse TypeSafeClient::executeSystemOne(
 			    || !question.at("criteria").is_object())
 				throw ValidationError("Choice question '" + name
 				                      + "' requires object criteria.");
+			const std::size_t options = question.at("criteria").size();
+			if (options == 0 || options > kMaxChoiceOptions)
+				throw ValidationError(
+				    "Choice question \"" + name + "\" has "
+				    + std::to_string(options)
+				    + " options; between 1 and 255 are required.");
 			for (const auto &[key, value] : question.at("criteria").items())
 				if (!isJsonContent(value, true))
 					throw ValidationError("Choice criterion '" + key
@@ -289,10 +430,20 @@ HttpResponse TypeSafeClient::executeSystemOne(
 		if (type == "score")
 		{
 			if (!question.contains("criteria")
-			    || !question.at("criteria").is_array()
-			    || question.at("criteria").empty())
+			    || !question.at("criteria").is_array())
 				throw ValidationError("Score question '" + name
-				                      + "' requires non-empty array criteria.");
+				                      + "' requires array criteria.");
+			const std::size_t levels = question.at("criteria").size();
+			if (levels < 2)
+				throw ValidationError(
+				    "Score question \"" + name + "\" has "
+				    + std::to_string(levels)
+				    + " criteria; at least two scores are required.");
+			if (levels > kMaxScoreLevels)
+				throw ValidationError(
+				    "Score question \"" + name + "\" has "
+				    + std::to_string(levels)
+				    + " criteria; at most ten scores are allowed.");
 			for (const auto &value : question.at("criteria"))
 				if (!isJsonContent(value, false))
 					throw ValidationError("Score question '" + name
@@ -321,8 +472,8 @@ HttpResponse TypeSafeClient::executeSystemOne(
 	const std::string body_str = payload.dump();
 	if (timeout_ms <= 0)
 		throw ValidationError("Timeout must be greater than zero.");
-	return sendRequest("POST", kSystemOnePath, body_str, timeout_ms,
-	                   request.extra_headers);
+	return sendRequest("POST", _config.base_url + kSystemOnePath, body_str,
+	                   timeout_ms, request.extra_headers);
 }
 
 SystemOneResponse TypeSafeClient::systemOne(
@@ -339,8 +490,12 @@ std::future<SystemOneResponse> TypeSafeClient::systemOneAsync(
 
 ListModelsResponse TypeSafeClient::listModels() const
 {
-	HttpResponse res
-	    = sendRequest("GET", kModelsPath, std::nullopt, _config.timeout_ms);
+	if (_config.openrouter)
+		throw ValidationError(
+		    "listModels() is only available on the native TypeSafe API, "
+		    "not through OpenRouter.");
+	HttpResponse res = sendRequest("GET", _config.base_url + kModelsPath,
+	                               std::nullopt, _config.timeout_ms);
 
 	try
 	{

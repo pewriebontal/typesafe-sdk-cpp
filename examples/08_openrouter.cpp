@@ -6,39 +6,14 @@
 
 /**
  * @file 08_openrouter.cpp
- * @brief Running Jev evaluations through OpenRouter's decisions endpoint.
+ * @brief Running Jev evaluations through OpenRouter's System One endpoint.
  */
 
-#include <typesafe/curl_transport.h>
 #include <typesafe/typesafe.h>
 
 #include <cstdlib>
 #include <iostream>
-#include <memory>
 #include <string>
-
-namespace
-{
-
-/**
- * @brief Custom transport routing requests to OpenRouter's alpha decisions API.
- */
-class OpenRouterTransport final : public typesafe::Transport
-{
-	public:
-		typesafe::HttpResponse request(
-		    const typesafe::HttpRequest &request) override
-		{
-			typesafe::HttpRequest modified = request;
-			modified.url = "https://openrouter.ai/api/alpha/decisions";
-			return _curl.request(modified);
-		}
-
-	private:
-		typesafe::CurlTransport _curl;
-};
-
-}  // namespace
 
 int main()
 {
@@ -54,11 +29,8 @@ int main()
 
 	try
 	{
-		auto client = typesafe::TypeSafeClient::builder()
-		                  .api_key(key)
-		                  .model("typesafe/jev-1.13")
-		                  .transport(std::make_unique<OpenRouterTransport>())
-		                  .build();
+		auto client
+		    = typesafe::TypeSafeClient::builder().openrouter(key).build();
 
 		typesafe::SystemOneRequest request;
 		request.state

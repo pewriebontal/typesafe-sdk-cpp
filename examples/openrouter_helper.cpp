@@ -6,34 +6,12 @@
 
 #include "openrouter_helper.h"
 
-#include <typesafe/curl_transport.h>
-
 #include <cstdlib>
 #include <iostream>
-#include <memory>
 #include <string>
 
 namespace typesafe::examples
 {
-
-namespace
-{
-
-class OpenRouterTransport final : public Transport
-{
-	public:
-		HttpResponse request(const HttpRequest &req) override
-		{
-			HttpRequest modified = req;
-			modified.url = "https://openrouter.ai/api/alpha/decisions";
-			return _curl.request(modified);
-		}
-
-	private:
-		CurlTransport _curl;
-};
-
-}  // namespace
 
 TypeSafeClient createClient()
 {
@@ -46,11 +24,7 @@ TypeSafeClient createClient()
 	}
 	if (or_key != nullptr && std::string(or_key).size() > 0)
 	{
-		return TypeSafeClient::builder()
-		    .api_key(or_key)
-		    .model("typesafe/jev-1.13")
-		    .transport(std::make_unique<OpenRouterTransport>())
-		    .build();
+		return TypeSafeClient::builder().openrouter(or_key).build();
 	}
 
 	std::cerr

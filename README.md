@@ -53,6 +53,8 @@ add_subdirectory(typesafe-sdk-cpp)
 target_link_libraries(your_target PUBLIC typesafe_cpp)
 ```
 
+Added as a subdirectory, the SDK builds only the library: its tests, examples and `include(CTest)` run only when it is the top-level project. If your project already defines the `nlohmann_json::nlohmann_json` target (for example through `FetchContent`), the SDK uses it instead of calling `find_package`.
+
 ### Batteries Included (libcurl)
 By default, the SDK compiles with a built-in `libcurl` transport so it works out of the box. 
 
@@ -98,7 +100,7 @@ auto client = TypeSafeClient::builder()
 | `05_error_handling` | The typed error ladder; runs offline |
 | `06_custom_transport` | Injecting your own `Transport`; runs offline against a canned response |
 | `07_list_models` | Querying model names and aliases with `listModels` |
-| `08_openrouter` | Evaluating Jev 1.13 live via OpenRouter's decisions endpoint |
+| `08_openrouter` | Evaluating Jev 1.13 live through OpenRouter's System One endpoint |
 | `09_openrouter_sync` | Sequential evaluation of 5 messages with per-request latency |
 | `10_openrouter_async` | The same 5 messages concurrently, comparing the timings |
 | `11_openrouter_suite` | A six-part live suite exercising every primitive end to end |
@@ -109,6 +111,20 @@ cmake -S . -B build && cmake --build build
 ./build/examples/06_custom_transport      # runs offline
 OPENROUTER_API_KEY="sk-..." ./build/examples/08_openrouter # runs live against OpenRouter Jev
 ```
+
+## OpenRouter (experimental)
+
+OpenRouter also serves Jev, at `https://openrouter.ai/api/v1/systemone`. One builder call sets the key, that base URL, and the model `typesafe/jev-1.13`:
+
+```cpp
+auto client = typesafe::TypeSafeClient::builder()
+                  .openrouter("sk-or-v1-...")
+                  .build();
+```
+
+Call `.model(...)` after `.openrouter(...)` to choose another model; OpenRouter maps bare IDs such as `jev-latest` onto `typesafe/`. OpenRouter-only fields such as `session_id`, `provider` or `trace` go in `extra_body`. `listModels()` throws `ValidationError` on such a client, because OpenRouter's `/v1/models` is a different endpoint.
+
+OpenRouter's schema is stricter than TypeSafe's in two places the SDK does not check: every question needs `instructions`, and a Noul's `criteria`, when given, needs both `true` and `false`. Its error bodies (`{"error": {"message": ...}}`) are read into the exception message like TypeSafe's.
 
 ## Models
 
@@ -127,15 +143,38 @@ The `model` field in `SystemOneResponse` always reports the exact versioned mode
 
 ## Errors
 
-Every failure is a `TypeSafeError`; the specific class says what went wrong and what to do about it:
+Every failure is a `TypeSafeError`; the specific class says what went wrong and what to do about it. Messages carry the service's explanation: the field paths from a 422 `detail` list, or OpenRouter's `error.message`.
 
 | Exception | Meaning |
 |---|---|
 | `ValidationError` | The request broke the contract: refused locally, or by the service as HTTP 422. Fix the request; do not retry. |
 | `AuthenticationError` | The key was rejected (401/403). Fix the key, not the call. |
-| `RateLimitError` | 429, already retried with backoff (honouring `Retry-After` / `retry-after-ms`) and still limited. Back off longer. |
+| `RateLimitError` | 429, already retried with backoff (honouring `Retry-After` / `retry-after-ms` within the 30 s call budget) and still limited. Back off longer. |
 | `APIError` | The service refused or failed the request otherwise (5xx are retried, 529 included). |
 | `APIConnectionError` | Could not reach the service at all; retried, still unreachable. |
+
+## Testing your code
+
+`<typesafe/testing.h>` ships the recording transport the SDK's own suite uses. Inject it to see exactly what your code would send and to script what comes back, with no network. It is header-only and does not depend on any test framework:
+
+```cpp
+#include <typesafe/testing.h>
+
+auto  transport = std::make_unique<typesafe::testing::RecordingTransport>();
+auto *recording = transport.get();
+
+recording->responses.push_back(typesafe::testing::ValidResponse(
+    {{"spam", {{"type", "noul"}, {"noul", 0.97}}}}));
+auto client = typesafe::TypeSafeClient::builder()
+                  .api_key("test-key")
+                  .transport(std::move(transport))
+                  .build();
+
+// ... run the code under test with `client`, then inspect the request:
+const nlohmann::json sent = nlohmann::json::parse(recording->requests.at(0).body);
+```
+
+An empty response queue makes the next request throw, which the client reports as `APIConnectionError`; use `.max_retries(0)` to see it on the first attempt. The transport is not synchronized, so use one per test.
 
 ## Testing
 
@@ -146,6 +185,8 @@ cmake -S . -B build -DTYPESAFE_USE_LIBCURL=OFF   # the tests inject their own tr
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+Configuring with libcurl on also builds the `CurlTransport` tests, which check connection reuse against a loopback server.
 
 It covers the wire contract (default model, structured instructions, per-request headers, extra body fields), the error mapping and retry policy (which statuses retry, which throw which type, `Retry-After` handling), strict response validation, the models endpoint, and the async future's independence from the client that made it.
 

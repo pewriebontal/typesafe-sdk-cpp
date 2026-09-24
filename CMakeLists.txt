@@ -1,12 +1,22 @@
 cmake_minimum_required(VERSION 3.14)
-project(typesafe-sdk-cpp VERSION 0.1.0 LANGUAGES CXX)
+project(typesafe-sdk-cpp VERSION 0.2.0 LANGUAGES CXX)
 
-include(CTest)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(TYPESAFE_IS_TOP_LEVEL ON)
+else()
+    set(TYPESAFE_IS_TOP_LEVEL OFF)
+endif()
+
+if(TYPESAFE_IS_TOP_LEVEL)
+    include(CTest)
+endif()
 
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
-find_package(nlohmann_json REQUIRED)
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    find_package(nlohmann_json REQUIRED)
+endif()
 
 option(TYPESAFE_USE_LIBCURL "Build the default libcurl transport" ON)
 if(TYPESAFE_USE_LIBCURL)
@@ -56,7 +66,7 @@ endif()
 # ------------------------------------------------------------------------------
 # Testing
 # ------------------------------------------------------------------------------
-if(BUILD_TESTING)
+if(TYPESAFE_IS_TOP_LEVEL AND BUILD_TESTING)
     include(FetchContent)
     FetchContent_Declare(googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
@@ -80,6 +90,9 @@ if(BUILD_TESTING)
         tests/client_test.cpp
         tests/async_test.cpp
     )
+    if(TYPESAFE_USE_LIBCURL)
+        target_sources(typesafe_sdk_tests PRIVATE tests/curl_transport_test.cpp)
+    endif()
     target_link_libraries(typesafe_sdk_tests PRIVATE 
         GTest::gtest_main 
         typesafe_cpp
@@ -92,7 +105,7 @@ endif()
 # ------------------------------------------------------------------------------
 # Examples
 # ------------------------------------------------------------------------------
-option(TYPESAFE_BUILD_EXAMPLES "Build the example programs" ON)
+option(TYPESAFE_BUILD_EXAMPLES "Build the example programs" ${TYPESAFE_IS_TOP_LEVEL})
 if(TYPESAFE_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()

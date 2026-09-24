@@ -1,5 +1,3 @@
-# Example executables for the TypeSafe C++ SDK.
-
 if(TYPESAFE_USE_LIBCURL)
     add_library(typesafe_examples_helper STATIC openrouter_helper.cpp)
     target_link_libraries(typesafe_examples_helper PUBLIC typesafe_cpp)

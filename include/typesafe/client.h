@@ -25,6 +25,8 @@ struct TypeSafeClientConfig
 		std::string                default_model = "jev-latest";
 		int                        timeout_ms = 10000;
 		int                        max_retries = 2;
+		int                        retry_timeout_ms = 30000;
+		bool                       openrouter = false;
 };
 
 class TypeSafeClient;
@@ -41,7 +43,7 @@ class TypeSafeClientBuilder
 		TypeSafeClientBuilder();
 
 		/**
-		 * @brief Explicitly sets the API key used for authentication.
+		 * @brief Sets the API key.
 		 */
 		TypeSafeClientBuilder &api_key(const std::string &key);
 
@@ -53,7 +55,8 @@ class TypeSafeClientBuilder
 		TypeSafeClientBuilder &model(const std::string &model);
 
 		/**
-		 * @brief Sets the global timeout for all requests in milliseconds.
+		 * @brief Sets the timeout for each attempt in milliseconds (default:
+		 * 10000); SystemOneRequest::timeout_ms overrides it per request.
 		 */
 		TypeSafeClientBuilder &timeout(int ms);
 
@@ -61,6 +64,30 @@ class TypeSafeClientBuilder
 		 * @brief Sets the maximum number of automatic retries (default: 2).
 		 */
 		TypeSafeClientBuilder &max_retries(int retries);
+
+		/**
+		 * @brief Sets the total time budget for one call in milliseconds,
+		 * counting every attempt and every wait between them (default: 30000;
+		 * 0 disables the limit).
+		 *
+		 * No retry starts when the time spent plus its wait would reach the
+		 * budget; the call then throws the last attempt's error. A running
+		 * attempt keeps its full timeout. With the limit disabled, a wait
+		 * longer than 60 s also ends the call.
+		 */
+		TypeSafeClientBuilder &retry_timeout(int ms);
+
+		/**
+		 * @brief Experimental: sends System One requests through OpenRouter.
+		 *
+		 * Sets the API key, the base URL https://openrouter.ai/api (so calls
+		 * go to https://openrouter.ai/api/v1/systemone) and the model
+		 * "typesafe/jev-1.13". Call model() afterwards to pick another model;
+		 * calling base_url() afterwards leaves OpenRouter mode.
+		 * listModels() throws ValidationError in this mode, because
+		 * OpenRouter's /v1/models is a different endpoint.
+		 */
+		TypeSafeClientBuilder &openrouter(const std::string &key);
 
 		/**
 		 * @brief Injects a custom HTTP transport engine.
@@ -72,8 +99,11 @@ class TypeSafeClientBuilder
 		/**
 		 * @brief Finalizes configuration and instantiates the client.
 		 *
-		 * @throws AuthenticationError if no API key is provided or found in
-		 * env.
+		 * @throws AuthenticationError if the API key is missing, or contains
+		 * whitespace, control, or non-ASCII characters after trimming.
+		 * @throws ValidationError if the base URL is not absolute http(s), the
+		 * model is empty, the timeout is not positive, or max_retries or
+		 * retry_timeout is negative.
 		 * @throws TypeSafeError if no transport is injected and libcurl is
 		 * disabled.
 		 */
@@ -185,7 +215,7 @@ class TypeSafeClient
 
 		HttpResponse sendRequest(
 		    const std::string                        &method,
-		    const std::string                        &path,
+		    const std::string                        &url,
 		    const std::optional<std::string>         &body,
 		    int                                       timeout_ms,
 		    const std::map<std::string, std::string> &extra_headers = {}) const;

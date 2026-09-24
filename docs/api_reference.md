@@ -51,6 +51,7 @@ auto client = typesafe::TypeSafeClient::builder()
     .model("jev-latest")
     .timeout(10000)
     .max_retries(2)
+    .retry_timeout(30000)
     .build();
 ```
 
@@ -58,17 +59,19 @@ auto client = typesafe::TypeSafeClient::builder()
 
 | Method | Parameters | Default | Description |
 |---|---|---|---|
-| `api_key` | `const std::string &key` | `TYPESAFE_API_KEY` env | Sets the API bearer token used for authorization. |
-| `base_url` | `const std::string &url` | `https://api.typesafe.ai` | Base URL for all HTTP endpoints. Overrides `TYPESAFE_BASE_URL`. |
+| `api_key` | `const std::string &key` | `TYPESAFE_API_KEY` env | Sets the API bearer token used for authorization. Surrounding whitespace is trimmed; a key with whitespace, control or non-ASCII characters inside throws `AuthenticationError`. |
+| `base_url` | `const std::string &url` | `https://api.typesafe.ai` | Base URL for all HTTP endpoints; must start with `http://` or `https://`. Overrides `TYPESAFE_BASE_URL`. |
 | `model` | `const std::string &model` | `jev-latest` | Default model alias or version identifier. Overrides `TYPESAFE_DEFAULT_MODEL`. |
 | `timeout` | `int ms` | `10000` (10s) | Request timeout in milliseconds; must be greater than zero. |
-| `max_retries` | `int retries` | `2` | Number of automatic retries for transient errors (connection failures, 408, 429, 5xx). |
+| `max_retries` | `int retries` | `2` | Retries after the first attempt for connection failures, 408, 429 and 5xx. Waits follow `Retry-After` / `retry-after-ms` when the server sends one, otherwise exponential backoff from 500 ms, doubling up to 5 s, less up to 25% jitter. |
+| `retry_timeout` | `int ms` | `30000` (30s) | Total budget for one call, counting every attempt and every wait. No retry starts when the time spent plus its wait would reach the budget, so a `Retry-After` longer than the budget ends the call; the last attempt's error is thrown. A running attempt keeps its full `timeout`. `0` disables the limit, except that a wait longer than 60 s still ends the call; negative throws `ValidationError`. |
+| `openrouter` | `const std::string &key` | — | Experimental OpenRouter preset: sets the key, base URL `https://openrouter.ai/api` (calls go to `/api/v1/systemone`) and model `typesafe/jev-1.13`. Call `model` afterwards to override the model; calling `base_url` afterwards leaves OpenRouter mode. `listModels()` throws `ValidationError` on such a client. |
 | `transport` | `std::unique_ptr<Transport>` | `CurlTransport` | Injects a custom HTTP transport layer. |
 | `build` | *None* | — | Validates settings and constructs a `TypeSafeClient` instance. |
 
 ### Environment Variables
 
-If configuration values are not explicitly supplied to the builder, the SDK automatically reads from the environment:
+If configuration values are not explicitly supplied to the builder, the SDK automatically reads from the environment. Values are trimmed, and empty or whitespace-only values are ignored:
 
 - **`TYPESAFE_API_KEY`**: Fallback bearer token. If missing from both the builder and environment, `builder.build()` throws `typesafe::AuthenticationError`.
 - **`TYPESAFE_BASE_URL`**: Fallback base URL (defaults to `https://api.typesafe.ai` if unset).
@@ -187,7 +190,7 @@ struct Choice {
 ```
 
 * **`instructions`**: Optional prompt or rubric defining the selection task. Can be a string or structured JSON.
-* **`criteria`**: Key-value map of option names to descriptions (or `std::nullopt`).
+* **`criteria`**: Key-value map of option names to descriptions (or `std::nullopt`). Between 1 and 255 options are required; anything else throws `ValidationError` before anything is sent.
 
 ```cpp
 typesafe::Choice category_q{
@@ -212,7 +215,7 @@ struct Score {
 ```
 
 * **`instructions`**: Scoring instructions or evaluation guide.
-* **`criteria`**: Ordered sequence representing ascending levels of the metric.
+* **`criteria`**: Ordered sequence representing ascending levels of the metric. Between 2 and 10 levels are required; anything else throws `ValidationError` before anything is sent.
 
 ```cpp
 typesafe::Score urgency_q{

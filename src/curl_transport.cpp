@@ -8,6 +8,7 @@
 
 #include <curl/curl.h>
 
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 
@@ -59,6 +60,18 @@ static size_t curlHeaderCallback(char  *buffer,
 	return (realsize);
 }
 
+/**
+ * One easy handle per thread, reset between requests. libcurl keeps finished
+ * connections alive inside the handle, so later requests to the same host
+ * skip the TCP and TLS handshakes; no handle is ever shared between threads.
+ */
+static CURL *threadHandle()
+{
+	thread_local std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> handle(
+	    curl_easy_init(), &curl_easy_cleanup);
+	return (handle.get());
+}
+
 CurlTransport::CurlTransport()
 {
 	static std::once_flag initialized;
@@ -77,9 +90,10 @@ CurlTransport::~CurlTransport() = default;
 
 HttpResponse CurlTransport::request(const HttpRequest &req)
 {
-	CURL *curl = curl_easy_init();
+	CURL *curl = threadHandle();
 	if (!curl)
 		throw std::runtime_error("Failed to initialize libcurl.");
+	curl_easy_reset(curl);
 
 	HttpResponse response;
 	curl_easy_setopt(curl, CURLOPT_URL, req.url.c_str());
@@ -123,7 +137,6 @@ HttpResponse CurlTransport::request(const HttpRequest &req)
 	if (res != CURLE_OK)
 	{
 		curl_slist_free_all(chunk);
-		curl_easy_cleanup(curl);
 		throw std::runtime_error(std::string("curl_easy_perform() failed: ")
 		                         + curl_easy_strerror(res));
 	}
@@ -133,7 +146,6 @@ HttpResponse CurlTransport::request(const HttpRequest &req)
 	response.status_code = static_cast<int>(status_code);
 
 	curl_slist_free_all(chunk);
-	curl_easy_cleanup(curl);
 
 	return (response);
 }

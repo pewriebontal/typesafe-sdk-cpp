@@ -9,8 +9,8 @@
 #include <future>
 #include <memory>
 
-#include "fake_transport.h"
 #include "typesafe/client.h"
+#include "typesafe/testing.h"
 
 namespace
 {

@@ -37,9 +37,8 @@ class APIConnectionError : public TypeSafeError
 };
 
 /**
- * @brief The API key was rejected (HTTP 401 or 403).
- *
- * Fix the key, not the call.
+ * @brief The API key is missing or malformed (thrown by build()), or was
+ * rejected by the service (HTTP 401 or 403).
  */
 class AuthenticationError : public TypeSafeError
 {
@@ -53,8 +52,8 @@ class AuthenticationError : public TypeSafeError
 /**
  * @brief Rate limit exceeded (HTTP 429), after the configured retries.
  *
- * The retries already honoured Retry-After; back off longer before the
- * next attempt.
+ * Retries honour Retry-After within the call's retry budget; a longer
+ * Retry-After ends the call at once.
  */
 class RateLimitError : public TypeSafeError
 {
@@ -81,7 +80,7 @@ class APIError : public TypeSafeError
  * @brief The request broke the API contract.
  *
  * Refused by the client before anything was sent, or by the service as
- * HTTP 422. Fix the request; sending it unchanged will fail again.
+ * HTTP 422.
  */
 class ValidationError : public TypeSafeError
 {

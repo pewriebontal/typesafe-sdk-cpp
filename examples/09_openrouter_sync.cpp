@@ -6,7 +6,8 @@
 
 /**
  * @file 09_openrouter_sync.cpp
- * @brief Sequential synchronous classification with OpenRouter decisions API.
+ * @brief Sequential synchronous classification through OpenRouter's System One
+ * endpoint.
  */
 
 #include <chrono>

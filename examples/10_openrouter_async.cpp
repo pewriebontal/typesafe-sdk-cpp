@@ -6,7 +6,8 @@
 
 /**
  * @file 10_openrouter_async.cpp
- * @brief Concurrent parallel classification with OpenRouter decisions API.
+ * @brief Concurrent parallel classification through OpenRouter's System One
+ * endpoint.
  */
 
 #include <chrono>
